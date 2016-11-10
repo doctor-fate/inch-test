@@ -46,6 +46,7 @@ func main() {
 			return err
 		}
 		name := info.Name()
+		fmt.Printf("%s: %s\n", name, bout.String())
 		if strings.Contains(name, "GOOD") && bout.Len() > 0 {
 			return errors.New(fmt.Sprintf("%s: %s", name, bout.String()))
 		} else if strings.Contains(name, "BAD") && bout.Len() == 0 {
