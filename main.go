@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +12,7 @@ import (
 	"sync/atomic"
 )
 
-var all, wrong, failed uint32
+var failed uint32
 
 type file struct {
 	path string
@@ -21,7 +20,7 @@ type file struct {
 }
 
 type result struct {
-	path string
+	name string
 	out  string
 	err  error
 }
@@ -37,7 +36,6 @@ func walkFiles(root string) (<-chan file, <-chan error) {
 				return err
 			}
 			if info.Mode().IsRegular() {
-				all++
 				paths <- file{path, info.Name()}
 			}
 			return nil
@@ -47,29 +45,26 @@ func walkFiles(root string) (<-chan file, <-chan error) {
 	return paths, errc
 }
 
-func execer(checker string, paths <-chan file, c chan<- result) {
+func execer(checker string, paths <-chan file, rc chan<- result) {
+	var bout bytes.Buffer
 	for f := range paths {
-		var bout, berr bytes.Buffer
-		cmd := exec.Command("gcc", "-std=c11", "-w", "-fsyntax-only", "-c", f.path)
-		cmd.Stderr = &berr
+		cmd := exec.Command("clang", "-std=c11", "-w", "-fsyntax-only", "-c", f.path)
 		if err := cmd.Run(); err != nil {
 			atomic.AddUint32(&failed, 1)
 			continue
 		}
 
+		bout.Reset()
 		cmd = exec.Command(checker, f.path)
 		cmd.Stdout = &bout
-		cmd.Stderr = &berr
 		if err := cmd.Run(); err != nil {
-			c <- result{f.name, berr.String(), err}
+			panic(err)
 		}
 
 		if strings.Contains(f.name, "GOOD") && bout.Len() > 0 {
-			atomic.AddUint32(&wrong, 1)
-			c <- result{f.name, bout.String(), nil}
+			rc <- result{f.name, bout.String(), nil}
 		} else if strings.Contains(f.name, "BAD") && bout.Len() == 0 {
-			atomic.AddUint32(&wrong, 1)
-			c <- result{f.name, "not catched", nil}
+			rc <- result{f.name, "not catched", nil}
 		}
 	}
 }
@@ -77,28 +72,26 @@ func execer(checker string, paths <-chan file, c chan<- result) {
 func testAll(checker, root string, w io.Writer) error {
 	paths, errc := walkFiles(root)
 
-	c := make(chan result)
+	rc := make(chan result)
 	var wg sync.WaitGroup
-	const nw = 32
+	const nw = 128
 	wg.Add(nw)
 	for i := 0; i < nw; i++ {
 		go func() {
-			execer(checker, paths, c)
+			execer(checker, paths, rc)
 			wg.Done()
 		}()
 	}
 
 	go func() {
 		wg.Wait()
-		close(c)
+		close(rc)
 	}()
 
-	for r := range c {
-		if r.err != nil {
-			log.Printf("%s: %s\n", r.path, r.out)
-			continue
+	for r := range rc {
+		if r.err == nil {
+			fmt.Fprintf(w, "%s: %s\n", r.name, r.out)
 		}
-		fmt.Fprintf(w, "%s: %s\n", r.path, r.out)
 	}
 
 	if err := <-errc; err != nil {
@@ -113,17 +106,15 @@ func main() {
 		panic("len(os.Args) < 3")
 	}
 
-	out, err := os.Create("out.stat")
+	w, err := os.Create("wrong.log")
 	if err != nil {
 		panic(err)
 	}
-	defer out.Close()
+	defer w.Close()
 
-	if err := testAll(os.Args[1], os.Args[2], out); err != nil {
+	if err := testAll(os.Args[1], os.Args[2], w); err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("all: %d\n", all)
-	fmt.Printf("wrong: %d\n", wrong)
 	fmt.Printf("failed to compile: %d\n", failed)
 }
