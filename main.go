@@ -112,6 +112,10 @@ func main() {
 	}
 	defer w.Close()
 
+	if err := os.Chdir(os.Args[2]); err != nil {
+		panic(err)
+	}
+
 	if err := testAll(os.Args[1], os.Args[2], w); err != nil {
 		panic(err)
 	}
