@@ -35,7 +35,7 @@ func walkFiles(root string) (<-chan file, <-chan error) {
 			if err != nil {
 				return err
 			}
-			if info.Mode().IsRegular() {
+			if info.Mode().IsRegular() && strings.HasSuffix(info.Name(), ".c") {
 				paths <- file{path, info.Name()}
 			}
 			return nil
