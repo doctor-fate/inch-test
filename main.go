@@ -10,9 +10,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
-var failed uint32
+var (
+	failed    uint32
+	processed uint32
+)
 
 type file struct {
 	path string
@@ -22,7 +26,6 @@ type file struct {
 type result struct {
 	name string
 	out  string
-	err  error
 }
 
 func walkFiles(root string) (<-chan file, <-chan error) {
@@ -48,6 +51,7 @@ func walkFiles(root string) (<-chan file, <-chan error) {
 func execer(checker string, paths <-chan file, rc chan<- result) {
 	var bout bytes.Buffer
 	for f := range paths {
+		atomic.AddUint32(&processed, 1)
 		cmd := exec.Command("clang", "-std=c11", "-w", "-fsyntax-only", "-c", f.path)
 		if err := cmd.Run(); err != nil {
 			atomic.AddUint32(&failed, 1)
@@ -62,15 +66,29 @@ func execer(checker string, paths <-chan file, rc chan<- result) {
 		}
 
 		if strings.Contains(f.name, "GOOD") && bout.Len() > 0 {
-			rc <- result{f.name, bout.String(), nil}
+			rc <- result{f.name, bout.String()}
 		} else if strings.Contains(f.name, "BAD") && bout.Len() == 0 {
-			rc <- result{f.name, "not catched", nil}
+			rc <- result{f.name, "not catched"}
 		}
 	}
 }
 
 func testAll(checker, root string, w io.Writer) error {
 	paths, errc := walkFiles(root)
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Printf("files already processed: %d\n", atomic.LoadUint32(&processed))
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	rc := make(chan result)
 	var wg sync.WaitGroup
@@ -86,19 +104,14 @@ func testAll(checker, root string, w io.Writer) error {
 	go func() {
 		wg.Wait()
 		close(rc)
+		close(done)
 	}()
 
 	for r := range rc {
-		if r.err == nil {
-			fmt.Fprintf(w, "%s: %s\n", r.name, r.out)
-		}
+		fmt.Fprintf(w, "%s: %s\n", r.name, r.out)
 	}
 
-	if err := <-errc; err != nil {
-		return err
-	}
-
-	return nil
+	return <-errc
 }
 
 func main() {
@@ -119,6 +132,7 @@ func main() {
 	if err := testAll(os.Args[1], os.Args[2], w); err != nil {
 		panic(err)
 	}
+	time.Sleep(3 * time.Second)
 
 	fmt.Printf("failed to compile: %d\n", failed)
 }
